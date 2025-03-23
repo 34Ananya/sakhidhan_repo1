@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Contract Payment Integration</title>
+    <!-- Add Web3.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/web3/1.7.0/web3.min.js"></script>
+    <!-- Add Ethers.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            background-color: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        input {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .success {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        #debugInfo {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Smart Contract Payment Integration</h2>
+        <button onclick="connectMetaMask()">Connect Wallet</button>
+        <p>Wallet Address: <span id="walletAddress">Not connected</span></p>
+        <p>Wallet Balance: <span id="walletBalance">0 ETH</span></p>
+        <p>Contract Balance: <span id="contractBalance">0 ETH</span></p>
+        <input type="number" id="amount" placeholder="Enter amount in ETH" step="0.01">
+        <button onclick="sendTransaction()">Send Now</button>
+        <div id="transactionStatus" class="status"></div>
+        <div id="debugInfo"></div>
+    </div>
+
+    <script>
+        let contract;
+        let signer;
+        let web3;
+        const contractAddress = "0xd1d73f8E057225abe10702ac78f8Cf4107C598Ba";
+        const contractABI = [
+            {
+                "inputs": [],
+                "name": "deposit",
+                "outputs": [],
+                "stateMutability": "payable",
+                "type": "function"
+            },
+            {
+                "inputs": [],
+                "name": "getTotalPoolBalance",
+                "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+                "stateMutability": "view",
+                "type": "function"
+            }
+        ];
+
+        function updateDebugInfo(message) {
+            const debugInfo = document.getElementById('debugInfo');
+            debugInfo.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+            debugInfo.scrollTop = debugInfo.scrollHeight;
+        }
+
+        async function connectMetaMask() {
+            try {
+                updateDebugInfo("Starting MetaMask connection...");
+                
+                // Check if MetaMask is installed
+                if (typeof window.ethereum === 'undefined') {
+                    updateDebugInfo("MetaMask is not installed!");
+                    alert('Please install MetaMask to use this application!');
+                    return;
+                }
+
+                updateDebugInfo("MetaMask is installed, requesting accounts...");
+                
+                // Request account access
+                const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                if (!accounts || accounts.length === 0) {
+                    updateDebugInfo("No accounts found!");
+                    alert("No accounts found in MetaMask!");
+                    return;
+                }
+
+                const account = accounts[0];
+                updateDebugInfo(`Connected account: ${account}`);
+                
+                // Initialize Web3
+                web3 = new Web3(window.ethereum);
+                
+                // Initialize Ethers provider and signer
+                const provider = new ethers.providers.Web3Provider(window.ethereum);
+                await provider.send("eth_requestAccounts", []); // Request account access
+                signer = provider.getSigner();
+                
+                // Initialize contract
+                contract = new ethers.Contract(contractAddress, contractABI, signer);
+                
+                // Update UI
+                document.getElementById('walletAddress').innerText = account;
+                
+                // Get initial balances
+                await getBalance(account);
+                await getContractBalance();
+                
+                // Add event listeners for account changes
+                window.ethereum.on('accountsChanged', handleAccountsChanged);
+                window.ethereum.on('chainChanged', () => window.location.reload());
+                
+                updateDebugInfo("Successfully connected to MetaMask!");
+                
+            } catch (error) {
+                console.error("Error connecting to MetaMask:", error);
+                updateDebugInfo(`Error: ${error.message}`);
+                document.getElementById('transactionStatus').innerText = 
+                    `Failed to connect to MetaMask: ${error.message}`;
+                document.getElementById('transactionStatus').className = "status error";
+            }
+        }
+
+        async function handleAccountsChanged(accounts) {
+            if (accounts.length === 0) {
+                // User disconnected their wallet
+                document.getElementById('walletAddress').innerText = "Not connected";
+                document.getElementById('walletBalance').innerText = "0 ETH";
+                contract = null;
+            } else {
+                // User switched accounts
+                const account = accounts[0];
+                document.getElementById('walletAddress').innerText = account;
+                await getBalance(account);
+                await getContractBalance();
+            }
+        }
+
+        async function sendTransaction() {
+            if (!contract) {
+                alert("Please connect your wallet first!");
+                return;
+            }
+
+            const amountInput = document.getElementById('amount').value;
+            if (!amountInput || amountInput <= 0) {
+                alert("Please enter a valid amount");
+                return;
+            }
+
+            try {
+                const statusElement = document.getElementById('transactionStatus');
+                statusElement.innerText = "Transaction in progress...";
+                statusElement.className = "status";
+                
+                // Convert ETH to Wei
+                const amountInWei = ethers.utils.parseEther(amountInput);
+                
+                // Send transaction to contract
+                const tx = await contract.deposit({ value: amountInWei });
+                
+                // Wait for transaction to be mined
+                await tx.wait();
+                
+                // Update balances
+                const address = await signer.getAddress();
+                await getBalance(address);
+                await getContractBalance();
+                
+                statusElement.innerText = "Transaction successful! TX Hash: " + tx.hash;
+                statusElement.className = "status success";
+            } catch (error) {
+                console.error("Transaction failed:", error);
+                const statusElement = document.getElementById('transactionStatus');
+                statusElement.innerText = "Transaction failed: " + error.message;
+                statusElement.className = "status error";
+            }
+        }
+
+        async function getBalance(address) {
+            if (web3) {
+                try {
+                    const balance = await web3.eth.getBalance(address);
+                    const balanceInEth = web3.utils.fromWei(balance, 'ether');
+                    document.getElementById('walletBalance').innerText = parseFloat(balanceInEth).toFixed(4) + " ETH";
+                } catch (error) {
+                    console.error("Error getting balance:", error);
+                }
+            }
+        }
+
+        async function getContractBalance() {
+            if (contract) {
+                try {
+                    const balance = await contract.getTotalPoolBalance();
+                    const balanceInEth = ethers.utils.formatEther(balance);
+                    document.getElementById('contractBalance').innerText = parseFloat(balanceInEth).toFixed(4) + " ETH";
+                } catch (error) {
+                    console.error("Error getting contract balance:", error);
+                }
+            }
+        }
+    </script>
+</body>
+</html>
